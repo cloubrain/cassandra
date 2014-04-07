@@ -3,7 +3,6 @@ cassandra
 
 Cassandra Interface  
   
-Cloubrain optimizer integrated with OpenStack
 
 How to Use
 ----------
@@ -15,16 +14,22 @@ Control Plane
 -------------
 
 mongo_cass.py  
-This initializes a datacenter using real data from OpenStack.  
-Basic subcomponents:  cbmanager.py vmpm.py rabbitget.py  
-
+Worker to manage the migration of data from mongoDB to Cassandra.  
+Specify:  
+-dcname: the are 5 choices with the number of total entries  
+-datanum: ammount of data entries to migrate  
+-datachunk: size of chunks (200-400 is good)  
+-place: data entry to begin with  
+Basic subcomponents:  cbmongo.py cbcassandra.py  
+  
 cbmongo.py	
-Pulls data from mongoDB in chunks.
+Pulls data from mongoDB in chunks.  
 cbm = cbmongo.CBmongo(dcname)  
-vmdata = cbm.getData(dcname, place, place+datachunk)
-  # returns datachunk data entries: vmdata is a dict sorted by vm
-
-rabbitget.py   50 lines  
-Gets latest data from RabbitMQ and returns it  
-usage: rabbitget.getData()  
-
+vmdata = cbm.getData(dcname, place, place+datachunk)  
+  # returns datachunk data entries: vmdata is a dict sorted by vm  
+  
+cbcassandra.py  
+Python interface for Cassandra.  
+-Specifies the schema  
+-INSERT operators  
+  
