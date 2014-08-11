@@ -18,12 +18,13 @@ class CBcassandra(object):
         """ initialize Class objects """
         self.chost = chost
         self.keyspace = keyspace
+        self.cur = None  # Use this cursor with bulk requests. CAREFUL: Use this ONLY if each parallel CBcassandra requester makes its own worker.
         # Tables: see cassandra_schema.txt
         self.osarchivebulk = "data_archive_openstackbulk"
         self.osarchive = "data_archive_openstack"
         self.simple = "DataSimple"
         self.datastore = "DataStore"
-        self.ds_meta = "ds_metadata" # Row Partion of DataStore
+        self.ds_meta = "dsMetaData" # Row Partion of DataStore
 
     def getclustsess(self, keyspace=None):
         """ Return a Cluster instance and a session object """
@@ -33,6 +34,14 @@ class CBcassandra(object):
         else:
             session = cluster.connect()
         return cluster, session
+
+    def open_cur(self):
+        """ Opens cursor for bulk requests. Make sure to close_cur() """
+        cluster, cur = self.getclustsess(self.keyspace)
+        self.cur = cur
+
+    def close_cur(self):
+        self.cur.shutdown()
 
     def setup_schema(self):
         """ Creates our schema. Leave the flexiblility for now. """
@@ -57,7 +66,6 @@ class CBcassandra(object):
 
         # This ignores Row Partition for now. Partition = 0.
         # I added platform: vmware, openstack, aws, rackpace, ...
-        # I will make a worker to try to migrate a day of info. If it looks good, we can do more.
         tables[self.simple] = ("""CREATE TABLE """ + self.simple + """ (
                         dc_name text,
                         time_bucket text,
@@ -68,13 +76,49 @@ class CBcassandra(object):
                         perf_name text,
                         perf_data int,
                         PRIMARY KEY ((dc_name, time_bucket, partition), perf_name, vm_name, measurement_time)
-                        );""")
+                        ) WITH caching = 'all';""")
         cur.execute(tables[self.simple])
+        # CREATE INDEX time_bucket_key ON DataSimple ("time_bucket");
         self.createindex(cur, self.simple, "dc_name")
         self.createindex(cur, self.simple, "time_bucket")
         self.createindex(cur, self.simple, "platform")
         self.createindex(cur, self.simple, "perf_name")
         self.createindex(cur, self.simple, "vm_name")
+        
+        # DataStore with partitions and other metadata
+        # I added platform: vmware, openstack, aws, rackpace, ...
+        tables[self.datastore] = ("""CREATE TABLE """ + self.datastore + """ (
+                        dc_name text,
+                        time_bucket text,
+                        partition int,
+                        platform text,
+                        vm_name text,
+                        measurement_time timestamp,
+                        perf_name text,
+                        perf_data int,
+                        PRIMARY KEY ((dc_name, time_bucket, partition), perf_name, vm_name, measurement_time)
+                        );""")
+        cur.execute(tables[self.datastore])
+        self.createindex(cur, self.datastore, "dc_name")
+        self.createindex(cur, self.datastore, "time_bucket")
+        self.createindex(cur, self.datastore, "platform")
+        self.createindex(cur, self.datastore, "perf_name")
+        self.createindex(cur, self.datastore, "vm_name")
+
+        tables[self.ds_meta] = ("""CREATE TABLE """ + self.ds_meta + """ (
+                        dc_name text,
+                        time_bucket text,
+                        partition int,
+                        platform text,
+                        num_partitions int,
+                        max_len int,
+                        oldest_ts timestamp,
+                        PRIMARY KEY ((dc_name, time_bucket, partition))
+                        );""")
+        cur.execute(tables[self.ds_meta])
+        self.createindex(cur, self.ds_meta, "dc_name")
+        self.createindex(cur, self.ds_meta, "time_bucket")
+        
         print "Keyspace created: " + self.keyspace
         cur.shutdown()
 
@@ -158,6 +202,7 @@ class CBcassandra(object):
         cur.execute(query, values)
         #cur.shutdown()
         #print "INSERT into " + self.simple
+        return yymmddhh
 
     def return_insert(self, vmdata):
         query = "INSERT INTO " + self.simple + " (dc_name, time_bucket, partition, platform, vm_name, measurement_time, perf_name, perf_data) "
@@ -214,12 +259,125 @@ class CBcassandra(object):
         originaldict = pickle.loads(str(rowitem.vmsdata))
         print originaldict
 
-    def read_simple(self):
+    def read_simple_all(self):
         cluster, cur = self.getclustsess(self.keyspace)
-        rows = cur.execute("SELECT * FROM " + self.simple + ";")
+        rows = cur.execute("SELECT * FROM " + self.simple + " WHERE dc_name = 'dkan-cluster-2-DC' LIMIT 10;")
         for row in rows:
             print(row)
         cur.shutdown()
+
+    def read_simple(self, getdc, timebucket, numdata):
+        cluster, cur = self.getclustsess(self.keyspace)
+        result = cur.execute("SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' LIMIT " + str(numdata) + " ALLOW FILTERING;")
+        for row in result:
+            print(row)
+        cur.shutdown()
+        print "******"
+        return result
+
+    def read_simple_time(self, timebucket, numdata):
+        cluster, cur = self.getclustsess(self.keyspace)
+        result = cur.execute("SELECT * FROM " + self.simple + " WHERE time_bucket = '" + timebucket + "' LIMIT " + str(numdata) + " ALLOW FILTERING;")
+        cur.shutdown()
+        return result
+
+    def getTimebuckets(self, mydc, numbuckets):
+        #cluster, cur = self.getclustsess(self.keyspace)
+        timebuckets = ['2014031822', '2014031821', '2014031820', '2014031819', '2014031818', '2014031817', '2014031816', '2014031815', '2014031814', '2014031813', '2014031812', '2014031811', '2014031810', '2014031809', '2014031808', '2014031807', '2014031806', '2014031805', '2014031804', '2014031803', '2014031802', '2014031801', '2014031800', '2014031799', '2014031798']
+        #cqlstr = "SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' AND partition=0 and perf_name = 'cpu.usagemhz.average' LIMIT " + str(numdata) + " ;"
+        #result = cur.execute(cqlstr)
+        #cur.shutdown()
+        return timebuckets
+
+    def read_simple_dc_cpu(self, getdc, timebucket, numdata):
+        cluster, cur = self.getclustsess(self.keyspace)
+        cqlstr = "SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' AND partition=0 and perf_name = 'cpu.usagemhz.average' LIMIT " + str(numdata) + " ;"
+        print cqlstr
+        result = cur.execute(cqlstr)
+        cur.shutdown()
+        return result
+
+    def read_simple_dc_mem(self, getdc, timebucket, numdata):
+        cluster, cur = self.getclustsess(self.keyspace)
+        cqlstr = "SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' AND partition=0 and perf_name = 'mem.active.average' LIMIT " + str(numdata) + " ;"
+        print cqlstr
+        result = cur.execute(cqlstr)
+        cur.shutdown()
+        return result
+
+    def read_simple_vmname(self, getdc):
+        cur = self.cur
+        cqlstr = "SELECT vm_name FROM DataSimple WHERE dc_name = '" + getdc + "' AND time_bucket = '2014031922' AND partition=0 and perf_name = 'cpu.usagemhz.average' LIMIT 10000;"
+        result = cur.execute(cqlstr)
+        return result
+
+    def read_simple_dc_cpu_(self, getdc, timebucket, numdata):
+        # Called by PrepareData.dcsummary()
+        cur = self.cur
+        cqlstr = "SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' AND partition=0 and perf_name = 'cpu.usagemhz.average' LIMIT " + str(numdata) + " ;"
+        #print cqlstr
+        result = cur.execute(cqlstr)
+        return result
+
+    def read_simple_dc_mem_(self, getdc, timebucket, numdata):
+        # Called by PrepareData.dcsummary()
+        cur = self.cur
+        cqlstr = "SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' AND partition=0 and perf_name = 'mem.active.average' LIMIT " + str(numdata) + " ;"
+        #print cqlstr
+        result = cur.execute(cqlstr)
+        return result
+
+    def read_simple_vm_cpu_(self, getdc, vmname, timebucket, numdata):
+        # Called by PrepareData.vmsummary()
+        cur = self.cur
+        cqlstr = "SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' AND partition=0 AND vmname = '" + vmname + "' AND perf_name = 'cpu.usagemhz.average' LIMIT " + str(numdata) + " ;"
+        #print cqlstr
+        result = cur.execute(cqlstr)
+        return result
+
+    def read_simple_vm_mem_(self, getdc, vmname, timebucket, numdata):
+        # Called by PrepareData.vmsummary()
+        cur = self.cur
+        cqlstr = "SELECT * FROM " + self.simple + " WHERE dc_name = '" + getdc + "' AND time_bucket = '" + timebucket + "' AND partition=0 AND vmname = '" + vmname + "' AND  perf_name = 'mem.active.average' LIMIT " + str(numdata) + " ;"
+        #print cqlstr
+        result = cur.execute(cqlstr)
+        return result
+
+
+"""
+SELECT * FROM DataSimple WHERE dc_name = 'dkan-cluster-1-dc-19' LIMIT 10;
+
+SELECT * FROM DataSimple WHERE dc_name = 'dkan-cluster-1-dc-19' AND time_bucket = '2014031922' AND partition=0 LIMIT 10;
+SELECT * FROM DataSimple WHERE dc_name = 'dkan-cluster-1-dc-19' AND time_bucket = '2014031922' AND partition=0 AND vm_name = 'rocky' LIMIT 10;
+
+SELECT * FROM DataSimple WHERE dc_name = 'dkan-cluster-1-dc-19' AND time_bucket = '2014031922' AND partition=0 and perf_name = 'cpu.usagemhz.average' LIMIT 10000;
+SELECT * FROM DataSimple WHERE dc_name = 'dkan-cluster-1-dc-19' AND time_bucket = '2014031922' AND partition=0 and perf_name = 'cpu.usagemhz.average' LIMIT 100;
+
+Get vm_name:
+SELECT vm_name FROM DataSimple WHERE dc_name = 'dkan-cluster-1-dc-19' AND time_bucket = '2014031922' AND partition=0 and perf_name = 'cpu.usagemhz.average' LIMIT 10000;
+
+CREATE INDEX datasimple_dc_name_idx_10 ON datasimple (dc_name);
+CREATE INDEX datasimple_time_bucket_idx_10 ON datasimple (time_bucket);
+CREATE INDEX datasimple_perf_name_idx_10 ON datasimple (perf_name);
+CREATE INDEX datasimple_vm_name_idx_10 ON datasimple (vm_name);
+CREATE INDEX datasimple_platform_idx_10 ON datasimple (platform);
+
+
+
+CREATE TABLE clicks (
+  userid uuid,
+  url text,
+  timestamp date
+  PRIMARY KEY  (userid, url ) ) WITH COMPACT STORAGE;
+SELECT url, timestamp
+  FROM clicks
+  WHERE  userid = 148e9150-1dd2-11b2-0000-242d50cf1fff;
+SELECT timestamp
+  FROM clicks
+  WHERE  userid = 148e9150-1dd2-11b2-0000-242d50cf1fff
+  AND  url = 'http://google.com';
+"""
+
 
 """
 ### TEST ###
