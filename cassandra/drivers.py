@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from cassandra.query import SimpleStatement
+from cassandra.cluster import PagedResult
 from cassandra.cluster import Cluster
 from copy import deepcopy
 
@@ -28,11 +30,37 @@ class Cassandra(object):
         return True
 
 
+class Cloubrain(object):
+
+    def __init__(self, database, table, page_size=1000):
+        self.__pg_size = page_size
+        self.__table = table
+        self.__db = database
+
+    def vm_names(self, cluster):
+        unique_names = set()
+        query = "SELECT vm_name FROM {0} WHERE dc_name = {1} AND partition = 0"
+        statement = SimpleStatement(query.format(self.__table, cluster), fetch_size=self.__pg_size)
+        names = self.__db.execute(statement)
+        if isinstance(names, PagedResult):
+            for row in names:
+                unique_names.add(row.vm_name.encode(encoding='utf-8'))
+        else:
+            unique_names.update(map(lambda r: r.vm_name.encode(encoding='utf-8'), names))
+        return list(unique_names)
+
+
 if __name__ == '__main__':
     hostnames = ("23.253.55.224", )
-    table = "vmwarchive20"
-    with Cassandra(hostnames, keyspace=table) as database:
-        query = "DESCRIBE TABLE datasimple"
+    keyspace = "vmwarchive20"
+    table = "datasimple"
+    with Cassandra(hostnames, keyspace=keyspace) as database:
+        query = "DESCRIBE TABLE {0}".format(table)
         result = database.execute(query)
         print(result)
+
+    cluster = "dkan-cluster-1-da-20"
+    with Cassandra(hostnames, keyspace=keyspace) as database:
+        driver = Cloubrain(database, table)
+        print(driver.vm_names(cluster))
 
