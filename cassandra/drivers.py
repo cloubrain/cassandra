@@ -34,51 +34,6 @@ class Cassandra(object):
         return True
 
 
-class DataSimple(Cloubrain):
-    __FETCH_DATA_QUERY = "SELECT vm_name, measurement_time, perf_name, perf_data FROM {0} WHERE dc_name = {1}"
-    __SCHEMA_DISCOVERY = "SELECT {0} FROM {1} WHERE partition = 0"
-    __TABLE = "datasimple"
-
-    def __init__(self, database, cluster_names=None, guest_names=None, page_size=1024, perf_names=None):
-        if not ((cluster_names is None) or (guest_names is None) or (perf_names is None)):
-            self._cluster_index = dict((name, idx) for idx, name in enumerate(cluster_names))
-            self._guest_indices = dict((idx, dict((name, index) for index, name in enumerate(names))) for idx, names in enumerate(guest_names))
-            self._perf_indices = dict((idx, dict((name, index) for index, name in enumerate(names))) for idx, names in enumerate(perf_names))
-        else:
-            raise NotImplementedError
-        super(DataSimple, self).__init__(database, page_size=page_size)
-
-    def _build_data_fetch_query(self, cluster, start=None, stop=None):
-        query = DataSimple.__FETCH_DATA_QUERY.format(DataSimple.__TABLE, cluster)
-        if start is not None:
-            query += " AND time_bucket >= {0}".format(start.strftime("%Y%m%d%H"))
-        if stop is not None:
-            query += " AND time_bucket < {0}".format(stop.strftime("%Y%m%d%H"))
-        return query
-
-    def __discover_schema(self, attribute, cluster=None):
-        uniques = set()
-        if attribute in ("perf_name", "vm_name", ) and cluster is not None:
-            query = (DataSimple.__SCHEMA_DISCOVERY + " AND dc_name = {2}").format(attribute, DataSimple.__TABLE, cluster)
-            statement = SimpleStatement(query, fetch_size=self._pg_size)
-        elif attribute in ("dc_name", ) and cluster is None:
-            query = DataSimple.__SCHEMA_DISCOVERY.format(attribute, DataSimple.__TABLE)
-            statement = SimpleStatement(query, fetch_size=self._pg_size)
-        else:
-            statement = None
-        if statement is not None:
-            names = self._db.execute(statement)
-            for row in names:
-                uniques.add(itemgetter(0)(row))
-        return blist(uniques)
-
-    def add_to_schema(self, cluster, guests):
-        raise NotImplementedError
-
-    def drop_from_schema(self, cluster, guests):
-        raise NotImplementedError
-
-
 class Cloubrain(object):
 
     def __init__(self, database, page_size=1024):
@@ -104,6 +59,51 @@ class Cloubrain(object):
                 results = zeros((n_hosts, n_perfs, self._pg_size), dtype=float)
         if ((idx + 1) % self._pg_size) != 0:
             yield results[:, :, :idx + 1]
+
+
+class DataSimple(Cloubrain):
+    __FETCH_DATA_QUERY = "SELECT vm_name, measurement_time, perf_name, perf_data FROM {0} WHERE dc_name = '{1}'"
+    __SCHEMA_DISCOVERY = "SELECT {0} FROM {1} WHERE partition = 0"
+    __TABLE = "datasimple"
+
+    def __init__(self, database, cluster_names=None, guest_names=None, page_size=1024, perf_names=None):
+        if not ((cluster_names is None) or (guest_names is None) or (perf_names is None)):
+            self._cluster_index = dict((name, idx) for idx, name in enumerate(cluster_names))
+            self._guest_indices = dict((idx, dict((name, index) for index, name in enumerate(names))) for idx, names in enumerate(guest_names))
+            self._perf_indices = dict((idx, dict((name, index) for index, name in enumerate(names))) for idx, names in enumerate(perf_names))
+        else:
+            raise NotImplementedError
+        super(DataSimple, self).__init__(database, page_size=page_size)
+
+    def _build_data_fetch_query(self, cluster, start=None, stop=None):
+        query = DataSimple.__FETCH_DATA_QUERY.format(DataSimple.__TABLE, cluster)
+        if start is not None:
+            query += " AND time_bucket >= '{0}'".format(start.strftime("%Y%m%d%H"))
+        if stop is not None:
+            query += " AND time_bucket < '{0}'".format(stop.strftime("%Y%m%d%H"))
+        return query
+
+    def __discover_schema(self, attribute, cluster=None):
+        uniques = set()
+        if attribute in ("perf_name", "vm_name", ) and cluster is not None:
+            query = (DataSimple.__SCHEMA_DISCOVERY + " AND dc_name = '{2}'").format(attribute, DataSimple.__TABLE, cluster)
+            statement = SimpleStatement(query, fetch_size=self._pg_size)
+        elif attribute in ("dc_name", ) and cluster is None:
+            query = DataSimple.__SCHEMA_DISCOVERY.format(attribute, DataSimple.__TABLE)
+            statement = SimpleStatement(query, fetch_size=self._pg_size)
+        else:
+            statement = None
+        if statement is not None:
+            names = self._db.execute(statement)
+            for row in names:
+                uniques.add(itemgetter(0)(row))
+        return blist(uniques)
+
+    def add_to_schema(self, cluster, guests):
+        raise NotImplementedError
+
+    def drop_from_schema(self, cluster, guests):
+        raise NotImplementedError
 
 
 if __name__ == '__main__':
